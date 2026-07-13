@@ -449,14 +449,17 @@ void SendCreateMsg(char *sty, struct NewWindow *nwin)
 	char *p;
 	size_t len, n;
 	char **av;
+	int max_sty_len;
 
-	if (strlen(sty) > FILENAME_MAX)
-		sty[FILENAME_MAX] = 0;
-	if (strlen(sty) > 2 * MAXSTR - 1)
-		sty[2 * MAXSTR - 1] = 0;
-	sprintf(SocketPath + strlen(SocketPath), "/%s", sty);
+	max_sty_len = FILENAME_MAX;
+	if (2 * MAXSTR - 1 < max_sty_len)
+		max_sty_len = 2 * MAXSTR - 1;
+
+	snprintf(SocketPath + strlen(SocketPath), sizeof(SocketPath) - strlen(SocketPath), "/%.*s", max_sty_len, sty);
+	
 	if ((s = MakeClientSocket(1)) == -1)
 		exit(1);
+
 	memset((char *)&m, 0, sizeof(Message));
 	m.type = MSG_CREATE;
 	strncpy(m.m_tty, attach_tty, ARRAY_SIZE(m.m_tty) - 1);
