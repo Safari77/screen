@@ -633,6 +633,8 @@ int main(int argc, char **argv)
 		char *s;
 		if ((s = locale_name()) && strstr(s, "UTF-8"))
 			nwin_options.encoding = UTF8;
+		else
+			nwin_options.encoding = 0;
 #endif
 	}
 	{
