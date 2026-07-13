@@ -546,7 +546,7 @@ void LWrapChar(Layer *l, struct mchar *c, int y, int top, int bot, bool ins)
 				    && evp->v_xoff + l->l_width - 1 >= evp->v_xs
 				    && evp->v_xoff + l->l_width - 1 <= evp->v_xe)
 					break;	/* gotcha! */
-			if (evp == NULL || (ins && vp->v_xoff + l->l_width - 1 > vp->v_ye)) {
+			if (evp == NULL || (ins && vp->v_xoff + l->l_width - 1 > vp->v_xe)) {
 				/* no wrapping possible */
 				cvlist = l->l_cvlist;
 				cvlnext = cv->c_lnext;
