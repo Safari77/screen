@@ -996,7 +996,7 @@ int main(int argc, char **argv)
 			if (*ap == '/')
 				*ap = '-';
 		if (strlen(socknamebuf) > FILENAME_MAX)
-			socknamebuf[FILENAME_MAX - 1] = 0;
+			socknamebuf[FILENAME_MAX] = 0;
 		snprintf(SocketPath + strlen(SocketPath), sizeof(SocketPath) - strlen(SocketPath), "/%s", socknamebuf);
 		SET_GUID();
 		Attacher();
