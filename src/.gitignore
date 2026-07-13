@@ -19,3 +19,4 @@ term.h
 screen
 screen.exe
 stamp-h.in
+install-sh
