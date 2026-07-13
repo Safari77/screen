@@ -79,6 +79,8 @@ Layout *CreateLayout(char *title, int startat)
 		}
 	}
 	lay = calloc(1, sizeof(Layout));
+	if (!lay)
+		return lay;
 	lay->lay_title = SaveStr(title);
 	lay->lay_autosave = 1;
 	lay->lay_number = i;
@@ -148,7 +150,8 @@ void LoadLayout(Layout *lay)
 	if (!lay) {
 		while (D_canvas.c_slperp)
 			FreeCanvas(D_canvas.c_slperp);
-		MakeDefaultCanvas();
+		if (MakeDefaultCanvas() == -1)
+			return;
 		SetCanvasWindow(D_forecv, NULL);
 		D_layout = NULL;
 		return;
@@ -157,8 +160,10 @@ void LoadLayout(Layout *lay)
 		FreeCanvas(D_canvas.c_slperp);
 	D_cvlist = NULL;
 	D_forecv = lay->lay_forecv;
-	if (!D_forecv)
-		MakeDefaultCanvas();
+	if (!D_forecv) {
+		if (MakeDefaultCanvas() == -1)
+			return;
+	}
 	DupLayoutCv(&lay->lay_canvas, &D_canvas, false);
 	D_canvas.c_ys = (D_has_hstatus == HSTATUS_FIRSTLINE);
 	D_canvas.c_ye = D_height - 1 - ((D_canvas.c_slperp && D_canvas.c_slperp->c_slnext)
