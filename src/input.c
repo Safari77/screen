@@ -27,14 +27,14 @@
  */
 
 #include "config.h"
-
 #include "input.h"
-
 #include <stddef.h>
-
 #include "screen.h"
-
 #include "misc.h"
+#include <wchar.h>
+#include <wctype.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define INPUTLINE (flayer->l_height - 1)
 
@@ -44,8 +44,8 @@ static void InpRedisplayLine(int, int, int, int);
 
 struct inpline {
 	char buf[MAXSTR + 1];	/* text buffer */
-	size_t len;		/* length of the editable string */
-	size_t pos;		/* cursor position in editable string */
+	size_t len;		/* length of the editable string in bytes */
+	size_t pos;		/* cursor position in editable string in bytes */
 	struct inpline *next, *prev;
 };
 
@@ -58,13 +58,13 @@ static struct inpline inphist;
 struct inpdata {
 	struct inpline inp;
 	size_t inpmaxlen;		/* MAXSTR, or less, if caller has shorter buffer */
-	char *inpstring;	/* the prompt */
-	size_t inpstringlen;	/* length of the prompt */
-	int inpmode;		/* INP_NOECHO, INP_RAW, INP_EVERY */
+	char *inpstring;		/* the prompt */
+	size_t inpstringlen;	/* visual width of the prompt */
+	int inpmode;			/* INP_NOECHO, INP_RAW, INP_EVERY */
 	void (*inpfinfunc) (char *buf, size_t len, void *priv);
-	char *priv;		/* private data for finfunc */
-	int privdata;		/* private data space */
-	char *search;		/* the search string */
+	char *priv;				/* private data for finfunc */
+	int privdata;			/* private data space */
+	char *search;			/* the search string */
 };
 
 static const struct LayFuncs InpLf = {
@@ -78,17 +78,116 @@ static const struct LayFuncs InpLf = {
 };
 
 /*
-**   Here is the input routine
-*/
+ * glibc helper: Safely calculate visual width of a UTF-8 string portion
+ */
+static int utf8_strwidth(const char *s, int bytes) {
+	int width = 0;
+	mbstate_t ps;
+	memset(&ps, 0, sizeof(ps));
+	int i = 0;
+	while (i < bytes) {
+		wchar_t wc;
+		size_t res = mbrtowc(&wc, s + i, bytes - i, &ps);
+		if (res == (size_t)-2) {
+			break; /* Incomplete sequence at the end, wait for more bytes */
+		} else if (res == (size_t)-1) {
+			width += 1;
+			i++;
+			memset(&ps, 0, sizeof(ps));
+		} else if (res == 0) {
+			break;
+		} else {
+			int w = wcwidth(wc);
+			width += (w >= 0 ? w : 1);
+			i += res;
+		}
+	}
+	return width;
+}
+
+/*
+ * glibc helpers: Find previous/next valid UTF-8 character boundaries
+ */
+static size_t prev_char_boundary(const char *buf, size_t pos) {
+	size_t i = 0, last = 0;
+	mbstate_t ps;
+	memset(&ps, 0, sizeof(ps));
+	while (i < pos) {
+		last = i;
+		size_t res = mbrlen(buf + i, pos - i, &ps);
+		if (res == (size_t)-1 || res == (size_t)-2 || res == 0) {
+			i++;
+			memset(&ps, 0, sizeof(ps));
+		} else {
+			i += res;
+		}
+	}
+	return last;
+}
+
+static size_t next_char_boundary(const char *buf, size_t len, size_t pos) {
+	if (pos >= len) return len;
+	mbstate_t ps;
+	memset(&ps, 0, sizeof(ps));
+	size_t res = mbrlen(buf + pos, len - pos, &ps);
+	if (res == (size_t)-1 || res == (size_t)-2 || res == 0) return pos + 1;
+	return pos + res;
+}
+
+/*
+ * Helper: Converts raw UTF-8 into uint32_t Unicode Points and injects
+ * directly into Layer via LPutChar cells for proper rendering.
+ */
+static int LPutUtf8Str(Layer *l, const char *s, int bytes, int x, int y, int xs, int xe) {
+	mbstate_t ps;
+	memset(&ps, 0, sizeof(ps));
+	int curr_x = x;
+	int i = 0;
+
+	while (i < bytes) {
+		wchar_t wc;
+		size_t res = mbrtowc(&wc, s + i, bytes - i, &ps);
+
+		if (res == (size_t)-2) {
+			break; /* Incomplete sequence, gracefully hold drawing to avoid garbage output */
+		} else if (res == (size_t)-1) {
+			struct mchar mc = mchar_so;
+			mc.image = (uint32_t)(unsigned char)s[i];
+			if (curr_x >= xs && curr_x <= xe) LPutChar(l, &mc, curr_x, y);
+			curr_x++;
+			i++;
+			memset(&ps, 0, sizeof(ps));
+		} else if (res == 0) {
+			break;
+		} else {
+			int w = wcwidth(wc);
+			if (w < 0) w = 1;
+
+			struct mchar mc = mchar_so;
+			mc.image = (uint32_t)wc;
+
+			if (curr_x >= xs && curr_x <= xe) LPutChar(l, &mc, curr_x, y);
+
+			/* Explicitly populate the adjacent cell to prevent artifacts for CJK/Emojis */
+			if (w == 2) {
+				struct mchar mc_dummy = mchar_so;
+				mc_dummy.image = 0xFFFD; /* Screen relies on 0xFFFD to pad right-half of double-width glyphs */
+				if (curr_x + 1 >= xs && curr_x + 1 <= xe) LPutChar(l, &mc_dummy, curr_x + 1, y);
+			}
+
+			curr_x += (w > 0 ? w : 1);
+			i += res;
+		}
+	}
+	return curr_x;
+}
 
 /* called once, after InitOverlayPage in Input() or Isearch() */
 void inp_setprompt(char *p, char *s)
 {
-	struct inpdata *inpdata;
-
-	inpdata = (struct inpdata *)flayer->l_data;
+	struct inpdata *inpdata = (struct inpdata *)flayer->l_data;
 	if (p) {
-		inpdata->inpstringlen = strlen(p);
+		inpdata->inpstringlen = utf8_strwidth(p, strlen(p));
 		inpdata->inpstring = p;
 	}
 	if (s) {
@@ -98,7 +197,7 @@ void inp_setprompt(char *p, char *s)
 		inpdata->inp.pos = inpdata->inp.len = strlen(inpdata->inp.buf);
 	}
 	InpRedisplayLine(INPUTLINE, 0, flayer->l_width - 1, 0);
-	flayer->l_x = inpdata->inpstringlen + (inpdata->inpmode & INP_NOECHO ? 0 : inpdata->inp.pos);
+	flayer->l_x = inpdata->inpstringlen + (inpdata->inpmode & INP_NOECHO ? 0 : utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos));
 	flayer->l_y = INPUTLINE;
 }
 
@@ -117,19 +216,18 @@ void Input(char *istr, size_t len, int mode, void (*finfunc) (char *buf, size_t 
 	size_t maxlen;
 	struct inpdata *inpdata;
 
-	if (!flayer)
-		return;
+	if (!flayer) return;
+	if (len > MAXSTR) len = MAXSTR;
 
-	if (len > MAXSTR)
-		len = MAXSTR;
 	if (!(mode & INP_NOECHO)) {
-		maxlen = flayer->l_width - 1 - strlen(istr);
-		if (len > maxlen)
-			len = maxlen;
+		maxlen = flayer->l_width - 1 - (istr ? strlen(istr) : 0);
+		if (len > maxlen) len = maxlen;
 	}
-	if (InitOverlayPage(sizeof(struct inpdata), &InpLf, 1))
-		return;
+	if (InitOverlayPage(sizeof(struct inpdata), &InpLf, 1)) return;
+
 	flayer->l_mode = 1;
+	flayer->l_encoding = display ? display->d_encoding : 0; /* Inherit terminal encoding to prevent recasting */
+
 	inpdata = (struct inpdata *)flayer->l_data;
 	inpdata->inpmaxlen = len;
 	inpdata->inpfinfunc = finfunc;
@@ -137,69 +235,43 @@ void Input(char *istr, size_t len, int mode, void (*finfunc) (char *buf, size_t 
 	inpdata->inp.prev = inphist.prev;
 	inpdata->inpmode = mode;
 	inpdata->privdata = data;
-	if (!priv)
-		priv = (char *)&inpdata->privdata;
+	if (!priv) priv = (char *)&inpdata->privdata;
 	inpdata->priv = priv;
 	inpdata->inpstringlen = 0;
 	inpdata->inpstring = NULL;
 	inpdata->search = NULL;
-	if (istr)
-		inp_setprompt(istr, (char *)NULL);
-}
 
-static void erase_chars(struct inpdata *inpdata, char *from, char *to, int x, int mv)
-{
-	int chng;
-	if ((ptrdiff_t)inpdata->inp.len > to - inpdata->inp.buf)
-		memmove(from, to, inpdata->inp.len - (to - inpdata->inp.buf));
-	chng = to - from;
-	if (mv) {
-		x -= chng;
-		inpdata->inp.pos -= chng;
-	}
-	inpdata->inp.len -= chng;
-	if (!(inpdata->inpmode & INP_NOECHO)) {
-		struct mchar mc;
-		char *s = from < to ? from : to;
-		mc = mchar_so;
-		while (s < inpdata->inp.buf + inpdata->inp.len) {
-			mc.image = *s++;
-			LPutChar(flayer, &mc, x++, INPUTLINE);
-		}
-		while (chng--)
-			LPutChar(flayer, &mchar_blank, x++, INPUTLINE);
-		x = inpdata->inpstringlen + inpdata->inp.pos;
-		LGotoPos(flayer, x, INPUTLINE);
-	}
+	if (istr) inp_setprompt(istr, (char *)NULL);
 }
 
 static void InpProcess(char **ppbuf, size_t *plen)
 {
-	int len, x;
+	int len, cx;
 	char *pbuf;
 	char ch;
-	struct inpdata *inpdata;
-	Display *inpdisplay;
+	struct inpdata *inpdata = (struct inpdata *)flayer->l_data;
+	Display *inpdisplay = display;
 	int prev, next, search = 0;
 
-	inpdata = (struct inpdata *)flayer->l_data;
-	inpdisplay = display;
+#define RESET_SEARCH do { if (inpdata->search) { free(inpdata->search); inpdata->search = NULL; } } while (0)
 
-#define RESET_SEARCH do { if (inpdata->search) Free(inpdata->search); } while (0)
+	cx = inpdata->inpstringlen + (inpdata->inpmode & INP_NOECHO ? 0 : utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos));
+	LGotoPos(flayer, cx, INPUTLINE);
 
-	LGotoPos(flayer, inpdata->inpstringlen + (inpdata->inpmode & INP_NOECHO ? 0 : inpdata->inp.pos), INPUTLINE);
 	if (ppbuf == NULL) {
 		InpAbort();
 		return;
 	}
-	x = inpdata->inpstringlen + inpdata->inp.pos;
+
 	len = *plen;
 	pbuf = *ppbuf;
+
 	while (len) {
 		char *p = inpdata->inp.buf + inpdata->inp.pos;
-
 		ch = *pbuf++;
 		len--;
+		unsigned char uch = (unsigned char)ch;
+
 		if (inpdata->inpmode & INP_EVERY) {
 			inpdata->inp.buf[inpdata->inp.len] = ch;
 			if (ch) {
@@ -209,90 +281,112 @@ static void InpProcess(char **ppbuf, size_t *plen)
 			}
 		} else if (inpdata->inpmode & INP_RAW) {
 			display = inpdisplay;
-			(*inpdata->inpfinfunc) (&ch, 1, inpdata->priv);	/* raw */
-			if (ch)
-				continue;
+			(*inpdata->inpfinfunc) (&ch, 1, inpdata->priv);
+			if (ch) continue;
 		}
-		if (((unsigned char)ch & 0177) >= ' ' && ch != 0177 && inpdata->inp.len < inpdata->inpmaxlen) {
+
+		/* Accept any byte >= 32, including high UTF-8 bytes (128-255), skipping 127 (DEL) */
+		if ((uch >= ' ' && uch != 0177) && inpdata->inp.len < inpdata->inpmaxlen) {
 			if (inpdata->inp.len > inpdata->inp.pos)
 				memmove(p + 1, p, inpdata->inp.len - inpdata->inp.pos);
 			inpdata->inp.buf[inpdata->inp.pos++] = ch;
 			inpdata->inp.len++;
 
 			if (!(inpdata->inpmode & INP_NOECHO)) {
-				struct mchar mc;
-				mc = mchar_so;
-				mc.image = *p++;
-				LPutChar(flayer, &mc, x, INPUTLINE);
-				x++;
-				if (p < inpdata->inp.buf + inpdata->inp.len) {
-					while (p < inpdata->inp.buf + inpdata->inp.len) {
-						mc.image = *p++;
-						LPutChar(flayer, &mc, x++, INPUTLINE);
-					}
-					x = inpdata->inpstringlen + inpdata->inp.pos;
-					LGotoPos(flayer, x, INPUTLINE);
-				}
+				InpRedisplayLine(INPUTLINE, 0, flayer->l_width - 1, 0);
+				int new_cx = inpdata->inpstringlen + utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos);
+				LGotoPos(flayer, new_cx, INPUTLINE);
 			}
 			RESET_SEARCH;
 		} else if ((ch == '\b' || ch == 0177) && inpdata->inp.pos > 0) {
-			erase_chars(inpdata, p - 1, p, x, 1);
+			size_t new_pos = prev_char_boundary(inpdata->inp.buf, inpdata->inp.pos);
+			size_t chng = inpdata->inp.pos - new_pos;
+			memmove(inpdata->inp.buf + new_pos, inpdata->inp.buf + inpdata->inp.pos, inpdata->inp.len - inpdata->inp.pos);
+			inpdata->inp.pos = new_pos;
+			inpdata->inp.len -= chng;
+			if (!(inpdata->inpmode & INP_NOECHO)) {
+				InpRedisplayLine(INPUTLINE, 0, flayer->l_width - 1, 0);
+				int new_cx = inpdata->inpstringlen + utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos);
+				LGotoPos(flayer, new_cx, INPUTLINE);
+			}
 			RESET_SEARCH;
 		} else if (ch == '\025') {	/* CTRL-U */
-			x = inpdata->inpstringlen;
-			if (inpdata->inp.len && !(inpdata->inpmode & INP_NOECHO)) {
-				LClearArea(flayer, x, INPUTLINE, x + inpdata->inp.len - 1, INPUTLINE, 0, 0);
-				LGotoPos(flayer, x, INPUTLINE);
+			if (inpdata->inp.len > 0) {
+				memmove(inpdata->inp.buf, inpdata->inp.buf + inpdata->inp.pos, inpdata->inp.len - inpdata->inp.pos);
+				inpdata->inp.len -= inpdata->inp.pos;
+				inpdata->inp.pos = 0;
+				if (!(inpdata->inpmode & INP_NOECHO)) {
+					InpRedisplayLine(INPUTLINE, 0, flayer->l_width - 1, 0);
+					LGotoPos(flayer, inpdata->inpstringlen, INPUTLINE);
+				}
 			}
-			inpdata->inp.len = inpdata->inp.pos = 0;
 		} else if (ch == '\013') {	/* CTRL-K */
-			x = inpdata->inpstringlen + inpdata->inp.pos;
-			if (inpdata->inp.len > inpdata->inp.pos && !(inpdata->inpmode & INP_NOECHO)) {
-				LClearArea(flayer, x, INPUTLINE, x + inpdata->inp.len - inpdata->inp.pos - 1, INPUTLINE,
-					   0, 0);
-				LGotoPos(flayer, x, INPUTLINE);
+			if (inpdata->inp.len > inpdata->inp.pos) {
+				inpdata->inp.len = inpdata->inp.pos;
+				if (!(inpdata->inpmode & INP_NOECHO)) {
+					InpRedisplayLine(INPUTLINE, 0, flayer->l_width - 1, 0);
+					int new_cx = inpdata->inpstringlen + utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos);
+					LGotoPos(flayer, new_cx, INPUTLINE);
+				}
 			}
-			inpdata->inp.len = inpdata->inp.pos;
 		} else if (ch == '\027' && inpdata->inp.pos > 0) {	/* CTRL-W */
-			char *oldp = p--;
-			while (p > inpdata->inp.buf && *p == ' ')
-				p--;
-			while (p > inpdata->inp.buf && *(p - 1) != ' ')
-				p--;
-			erase_chars(inpdata, p, oldp, x, 1);
+			size_t p_idx = inpdata->inp.pos;
+			while (p_idx > 0 && inpdata->inp.buf[p_idx - 1] == ' ') p_idx--;
+			while (p_idx > 0) {
+				size_t prev_pos = prev_char_boundary(inpdata->inp.buf, p_idx);
+				if (inpdata->inp.buf[prev_pos] == ' ') break;
+				p_idx = prev_pos;
+			}
+			size_t chng = inpdata->inp.pos - p_idx;
+			memmove(inpdata->inp.buf + p_idx, inpdata->inp.buf + inpdata->inp.pos, inpdata->inp.len - inpdata->inp.pos);
+			inpdata->inp.pos = p_idx;
+			inpdata->inp.len -= chng;
+			if (!(inpdata->inpmode & INP_NOECHO)) {
+				InpRedisplayLine(INPUTLINE, 0, flayer->l_width - 1, 0);
+				int new_cx = inpdata->inpstringlen + utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos);
+				LGotoPos(flayer, new_cx, INPUTLINE);
+			}
 			RESET_SEARCH;
 		} else if (ch == '\004' && inpdata->inp.pos < inpdata->inp.len) {	/* CTRL-D */
-			erase_chars(inpdata, p, p + 1, x, 0);
+			size_t next_p = next_char_boundary(inpdata->inp.buf, inpdata->inp.len, inpdata->inp.pos);
+			size_t chng = next_p - inpdata->inp.pos;
+			memmove(inpdata->inp.buf + inpdata->inp.pos, inpdata->inp.buf + next_p, inpdata->inp.len - next_p);
+			inpdata->inp.len -= chng;
+			if (!(inpdata->inpmode & INP_NOECHO)) {
+				InpRedisplayLine(INPUTLINE, 0, flayer->l_width - 1, 0);
+				int new_cx = inpdata->inpstringlen + utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos);
+				LGotoPos(flayer, new_cx, INPUTLINE);
+			}
 			RESET_SEARCH;
 		} else if (ch == '\001' || (unsigned char)ch == 0201) {	/* CTRL-A */
-			LGotoPos(flayer, x -= inpdata->inp.pos, INPUTLINE);
 			inpdata->inp.pos = 0;
+			LGotoPos(flayer, inpdata->inpstringlen, INPUTLINE);
 		} else if ((ch == '\002' || (unsigned char)ch == 0202) && inpdata->inp.pos > 0) {	/* CTRL-B */
-			LGotoPos(flayer, --x, INPUTLINE);
-			inpdata->inp.pos--;
+			inpdata->inp.pos = prev_char_boundary(inpdata->inp.buf, inpdata->inp.pos);
+			int new_cx = inpdata->inpstringlen + utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos);
+			LGotoPos(flayer, new_cx, INPUTLINE);
 		} else if (ch == '\005' || (unsigned char)ch == 0205) {	/* CTRL-E */
-			LGotoPos(flayer, x += inpdata->inp.len - inpdata->inp.pos, INPUTLINE);
 			inpdata->inp.pos = inpdata->inp.len;
+			int new_cx = inpdata->inpstringlen + utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos);
+			LGotoPos(flayer, new_cx, INPUTLINE);
 		} else if ((ch == '\006' || (unsigned char)ch == 0206) && inpdata->inp.pos < inpdata->inp.len) {	/* CTRL-F */
-			LGotoPos(flayer, ++x, INPUTLINE);
-			inpdata->inp.pos++;
+			inpdata->inp.pos = next_char_boundary(inpdata->inp.buf, inpdata->inp.len, inpdata->inp.pos);
+			int new_cx = inpdata->inpstringlen + utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos);
+			LGotoPos(flayer, new_cx, INPUTLINE);
 		} else if ((prev = ((ch == '\020' || (unsigned char)ch == 0220) &&	/* CTRL-P */
 				    inpdata->inp.prev)) || (next = ((ch == '\016' || (unsigned char)ch == 0216) &&	/* CTRL-N */
 								    inpdata->inp.next)) ||
 			   (search = ((ch == '\022' || (unsigned char)ch == 0222) && inpdata->inp.prev))) {
-			struct mchar mc;
+
 			struct inpline *sel;
 			int pos = -1;
-
-			mc = mchar_so;
 
 			if (prev)
 				sel = inpdata->inp.prev;
 			else if (next)
 				sel = inpdata->inp.next;
 			else {
-				/* search */
-				inpdata->inp.buf[inpdata->inp.len] = 0;	/* Remove the ctrl-r from the end */
+				inpdata->inp.buf[inpdata->inp.len] = 0;
 				if (!inpdata->search)
 					inpdata->search = SaveStr(inpdata->inp.buf);
 				for (sel = inpdata->inp.prev; sel; sel = sel->prev) {
@@ -303,12 +397,9 @@ static void InpProcess(char **ppbuf, size_t *plen)
 					}
 				}
 				if (!sel)
-					continue;	/* Did not find a match. Process the next input. */
+					/* Did not find a match. Process the next input. */
+					continue;
 			}
-
-			if (inpdata->inp.len && !(inpdata->inpmode & INP_NOECHO))
-				LClearArea(flayer, inpdata->inpstringlen, INPUTLINE,
-					   inpdata->inpstringlen + inpdata->inp.len - 1, INPUTLINE, 0, 0);
 
 			if ((prev || search) && !inpdata->inp.next)
 				inphist = inpdata->inp;
@@ -320,19 +411,12 @@ static void InpProcess(char **ppbuf, size_t *plen)
 			if (inpdata->inp.pos > inpdata->inp.len)
 				inpdata->inp.pos = inpdata->inp.len;
 
-			x = inpdata->inpstringlen;
-			p = inpdata->inp.buf;
+			if (!(inpdata->inpmode & INP_NOECHO))
+				InpRedisplayLine(INPUTLINE, 0, flayer->l_width - 1, 0);
 
-			if (!(inpdata->inpmode & INP_NOECHO)) {
-				while (p < inpdata->inp.buf + inpdata->inp.len) {
-					mc.image = *p++;
-					LPutChar(flayer, &mc, x++, INPUTLINE);
-				}
-			}
-			x = inpdata->inpstringlen + inpdata->inp.pos;
-			LGotoPos(flayer, x, INPUTLINE);
+			int new_cx = inpdata->inpstringlen + (inpdata->inpmode & INP_NOECHO ? 0 : utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos));
+			LGotoPos(flayer, new_cx, INPUTLINE);
 		}
-
 		else if (ch == '\003' || ch == '\007' || ch == '\033' || ch == '\000' || ch == '\n' || ch == '\r') {
 			if (ch != '\n' && ch != '\r')
 				inpdata->inp.len = 0;
@@ -344,10 +428,8 @@ static void InpProcess(char **ppbuf, size_t *plen)
 				/* Look for a duplicate first */
 				for (store = inphist.prev; store; store = store->prev) {
 					if (strcmp(store->buf, inpdata->inp.buf) == 0) {
-						if (store->next)
-							store->next->prev = store->prev;
-						if (store->prev)
-							store->prev->next = store->next;
+						if (store->next) store->next->prev = store->prev;
+						if (store->prev) store->prev->next = store->next;
 						store->pos = inpdata->inp.pos;
 						break;
 					}
@@ -359,13 +441,12 @@ static void InpProcess(char **ppbuf, size_t *plen)
 				}
 				store->next = &inphist;
 				store->prev = inphist.prev;
-				if (inphist.prev)
-					inphist.prev->next = store;
+				if (inphist.prev) inphist.prev->next = store;
 				inphist.prev = store;
 			}
 
 			flayer->l_data = NULL;	/* so inpdata does not get freed */
-			InpAbort();	/* redisplays... */
+			InpAbort();				/* redisplays... */
 			*ppbuf = pbuf;
 			*plen = len;
 			display = inpdisplay;
@@ -373,8 +454,7 @@ static void InpProcess(char **ppbuf, size_t *plen)
 				(*inpdata->inpfinfunc) (inpdata->inp.buf, inpdata->inp.len, inpdata->priv);
 			else
 				(*inpdata->inpfinfunc) (pbuf - 1, 0, inpdata->priv);
-			if (inpdata->search)
-				free(inpdata->search);
+			if (inpdata->search) free(inpdata->search);
 			free(inpdata);
 			return;
 		} else {
@@ -384,7 +464,7 @@ static void InpProcess(char **ppbuf, size_t *plen)
 		}
 	}
 	if (!(inpdata->inpmode & INP_RAW)) {
-		flayer->l_x = inpdata->inpstringlen + (inpdata->inpmode & INP_NOECHO ? 0 : inpdata->inp.pos);
+		flayer->l_x = inpdata->inpstringlen + (inpdata->inpmode & INP_NOECHO ? 0 : utf8_strwidth(inpdata->inp.buf, inpdata->inp.pos));
 		flayer->l_y = INPUTLINE;
 	}
 	*ppbuf = pbuf;
@@ -399,42 +479,30 @@ static void InpAbort(void)
 
 static void InpRedisplayLine(int y, int xs, int xe, int isblank)
 {
-	int q, r, s, l, v;
-	struct inpdata *inpdata;
+	struct inpdata *inpdata = (struct inpdata *)flayer->l_data;
 
-	inpdata = (struct inpdata *)flayer->l_data;
 	if (y != INPUTLINE) {
 		LAY_CALL_UP(LayRedisplayLine(y, xs, xe, isblank));
 		return;
 	}
-	inpdata->inp.buf[inpdata->inp.len] = 0;
-	q = xs;
-	v = xe - xs + 1;
-	s = 0;
-	r = inpdata->inpstringlen;
-	if (v > 0 && q < r) {
-		l = v;
-		if (l > r - q)
-			l = r - q;
-		LPutStr(flayer, inpdata->inpstring + q - s, l, &mchar_so, q, y);
-		q += l;
-		v -= l;
+	inpdata->inp.buf[inpdata->inp.len] = '\0';
+
+	if (isblank) {
+		LClearArea(flayer, xs, y, xe, y, 0, 0);
+		return;
 	}
-	s = r;
-	r += inpdata->inp.len;
-	if (!(inpdata->inpmode & INP_NOECHO) && v > 0 && q < r) {
-		l = v;
-		if (l > r - q)
-			l = r - q;
-		LPutStr(flayer, inpdata->inp.buf + q - s, l, &mchar_so, q, y);
-		q += l;
-		v -= l;
+
+	int curr_x = 0;
+
+	if (inpdata->inpstring) {
+		curr_x = LPutUtf8Str(flayer, inpdata->inpstring, strlen(inpdata->inpstring), curr_x, y, xs, xe);
 	}
-	r = flayer->l_width;
-	if (!isblank && v > 0 && q < r) {
-		l = v;
-		if (l > r - q)
-			l = r - q;
-		LClearArea(flayer, q, y, q + l - 1, y, 0, 0);
+
+	if (!(inpdata->inpmode & INP_NOECHO)) {
+		curr_x = LPutUtf8Str(flayer, inpdata->inp.buf, inpdata->inp.len, curr_x, y, xs, xe);
+	}
+
+	if (curr_x <= xe) {
+		LClearArea(flayer, curr_x, y, xe, y, 0, 0);
 	}
 }
