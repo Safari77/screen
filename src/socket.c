@@ -926,15 +926,17 @@ void ReceiveMsg(void)
 void ReceiveRaw(int s)
 {
 	char rd[256];
-	ssize_t len = 0;
+	socklen_t len;
+	ssize_t nread;
 	struct sockaddr_un a;
+
 	len = sizeof(a);
-	if ((s = accept(s, (struct sockaddr *)&a, (socklen_t *)&len)) < 0) {
+	if ((s = accept(s, (struct sockaddr *)&a, &len)) < 0) {
 		Msg(errno, "accept");
 		return;
 	}
-	while ((len = read(s, rd, 255)) > 0) {
-		rd[len] = 0;
+	while ((nread = read(s, rd, 255)) > 0) {
+		rd[nread] = 0;
 		printf("%s", rd);
 	}
 	close(s);
