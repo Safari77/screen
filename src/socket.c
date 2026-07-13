@@ -898,7 +898,7 @@ void ReceiveMsg(void)
 			char *oldSocketPath = SaveStr(SocketPath);
 			strncpy(SocketPath, m.m.command.writeback, ARRAY_SIZE(SocketPath));
 			int s = MakeClientSocket(0);
-			strncpy(SocketPath, oldSocketPath, ARRAY_SIZE(SocketPath));
+			strncpy(SocketPath, oldSocketPath, ARRAY_SIZE(SocketPath)-1);
 			Free(oldSocketPath);
 			if (s >= 0) {
 				queryflag = s;
