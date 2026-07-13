@@ -213,6 +213,56 @@ static int DoAutolf(char *buf, int *lenp, int fr)
 	return trunc;
 }
 
+/* Upper bound on w_inspill, so a window whose application never reads its
+ * input cannot make us buffer without limit. Sized to hold the largest
+ * OSC 52 clipboard response we forward (see MAXOSC52 in ansi.c). */
+#define WIN_INSPILL_MAX (16 * 1024 * 1024)
+
+/*
+ * w_inbuf is a fixed IOSIZE buffer, and until now anything that did not fit
+ * was silently dropped. For keyboard input that was harmless: a human cannot
+ * type 4k ahead of a stuck application. But the same path carries terminal
+ * responses, and an OSC 52 clipboard response can be over a megabyte and
+ * arrives faster than the application drains it, so pastes came through
+ * truncated ("Invalid OSC 52 response received" in vim). Spill the overflow
+ * into a growing buffer instead; win_writeev_fn refills w_inbuf from it as
+ * the application reads. Beyond WIN_INSPILL_MAX the overflow is dropped as
+ * before. Pseudo windows keep the old dropping behavior.
+ *
+ * Note the spilled data does not go through DoAutolf: autolf rewrites CR on
+ * *keyboard* input, and the only thing that realistically overflows here is
+ * a terminal response, which autolf was never meant to touch.
+ */
+static void WinSpillRest(Window *p, char **bufpp, size_t *lenp)
+{
+	size_t len = *lenp;
+
+	if (len == 0)
+		return;
+	/* Whatever happens below, the input counts as consumed. */
+	*bufpp += len;
+	*lenp = 0;
+
+	if (W_UWP(p) || p->w_ptyfd < 0)
+		return;		/* old behavior: drop */
+	if (p->w_inspilllen + len > WIN_INSPILL_MAX)
+		return;		/* over the cap: drop the excess */
+	if (p->w_inspilllen + len > p->w_inspillsize) {
+		char *buf;
+		size_t size = p->w_inspillsize ? p->w_inspillsize : IOSIZE;
+
+		while (size < p->w_inspilllen + len)
+			size *= 2;
+		buf = realloc(p->w_inspill, size);
+		if (!buf)
+			return;	/* out of memory: drop */
+		p->w_inspill = buf;
+		p->w_inspillsize = size;
+	}
+	memmove(p->w_inspill + p->w_inspilllen, *bufpp - len, len);
+	p->w_inspilllen += len;
+}
+
 static void WinProcess(char **bufpp, size_t *lenp)
 {
 	int l2 = 0, f, *ilen, l = *lenp, trunc;
@@ -263,6 +313,13 @@ static void WinProcess(char **bufpp, size_t *lenp)
 		f = ARRAY_SIZE(fore->w_inbuf) - *ilen;
 	}
 
+	/* If earlier overflow is waiting in w_inspill, new input must queue
+	 * behind it, or bytes would reach the application out of order. */
+	if (fore->w_inspilllen) {
+		WinSpillRest(fore, bufpp, lenp);
+		return;
+	}
+
 	if (l > f)
 		l = f;
 #ifdef ENABLE_TELNET
@@ -285,8 +342,10 @@ static void WinProcess(char **bufpp, size_t *lenp)
 		*ilen += l2;
 		*bufpp += l;
 		*lenp -= l;
+		WinSpillRest(fore, bufpp, lenp);
 		return;
 	}
+	WinSpillRest(fore, bufpp, lenp);
 }
 
 static void ZombieProcess(char **bufpp, size_t *lenp)
@@ -850,6 +909,10 @@ void FreeWindow(Window *window)
 
 	if (window->w_hstatus)
 		free(window->w_hstatus);
+	if (window->w_longstring)
+		free(window->w_longstring);
+	if (window->w_inspill)
+		free(window->w_inspill);
 	for (int i = 0; window->w_cmdargs[i]; i++)
 		free(window->w_cmdargs[i]);
 	if (window->w_dir)
@@ -1577,6 +1640,22 @@ static void win_writeev_fn(Event *event, void *data)
 
 		if ((p->w_inlen -= len))
 			memmove(p->w_inbuf, p->w_inbuf + len, p->w_inlen);
+	}
+	/* Refill from the overflow of w_inbuf, if any (see WinSpillRest). */
+	if (p->w_inspilllen && p->w_inlen < ARRAY_SIZE(p->w_inbuf)) {
+		size_t n = ARRAY_SIZE(p->w_inbuf) - p->w_inlen;
+
+		if (n > p->w_inspilllen)
+			n = p->w_inspilllen;
+		memmove(p->w_inbuf + p->w_inlen, p->w_inspill, n);
+		p->w_inlen += n;
+		if ((p->w_inspilllen -= n))
+			memmove(p->w_inspill, p->w_inspill + n, p->w_inspilllen);
+		else {
+			free(p->w_inspill);
+			p->w_inspill = NULL;
+			p->w_inspillsize = 0;
+		}
 	}
 	if (p->w_paster.pa_pastelen && !p->w_slowpaste) {
 		struct paster *pa = &p->w_paster;

@@ -158,6 +158,9 @@ struct Window {
 	int	 w_ptyfd;		/* fd of the master pty */
 	char	 w_inbuf[IOSIZE];
 	int	 w_inlen;
+	char	*w_inspill;		/* overflow of w_inbuf, e.g. an OSC 52 clipboard response */
+	size_t	w_inspilllen;	/* bytes used in w_inspill */
+	size_t	w_inspillsize;	/* bytes allocated for w_inspill */
 	char	 w_outbuf[IOSIZE];
 	int	 w_outlen;
 	bool	 w_aflag;		/* (-a option) */
@@ -213,6 +216,10 @@ struct Window {
 	int	 w_mbcs;		/* saved char for multibytes charset */
 	char	 w_string[MAXSTR];
 	char	*w_stringp;
+	char	*w_longstring;		/* oversized string payload (OSC 52), or NULL */
+	size_t	 w_longstringlen;	/* bytes used in w_longstring */
+	size_t	 w_longstringsize;	/* bytes allocated for w_longstring */
+	bool	 w_longstringover;	/* payload passed MAXOSC52, discard it */
 	char	*w_tabs;		/* line with tabs */
 	int	 w_bell;		/* bell status of this window */
 	int	 w_flow;		/* flow flags */

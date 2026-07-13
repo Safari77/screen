@@ -98,9 +98,19 @@ static char *state_t_string[] = {
 static int Special(Window *,int);
 static void DoESC(Window *, int, int);
 static void DoCSI(Window *, int, int);
+/* Upper bound on a single OSC 52 payload. Base64 expands by 4/3, so this
+ * allows a clipboard of roughly 12 MB. */
+#ifndef MAXOSC52
+#define MAXOSC52 (16 * 1024 * 1024)
+#endif
+
 static void StringStart(Window *, enum string_t);
 static void StringChar(Window *, int);
 static int StringEnd(Window *);
+static bool StringLongStart(Window *);
+static void StringLongChar(Window *, int);
+static void StringLongFree(Window *);
+static void ForwardOSC(Window *, char *, char *, bool);
 static void PrintStart(Window *);
 static void PrintChar(Window *, int);
 static void PrintFlush(Window *);
@@ -150,6 +160,8 @@ static void WChangeSize(Window *, int, int);
 
 void ResetAnsiState(Window *win)
 {
+	StringLongFree(win);
+	win->w_longstringover = false;
 	win->w_state = LIT;
 	win->w_StringType = NONE;
 }
@@ -1203,17 +1215,119 @@ static void DoCSI(Window *win, int c, int intermediate)
 
 static void StringStart(Window *win, enum string_t type)
 {
+	StringLongFree(win);
+	win->w_longstringover = false;
 	win->w_StringType = type;
 	win->w_stringp = win->w_string;
 	win->w_state = ASTR;
 }
 
+/*
+ * w_string is a fixed MAXSTR array, which is plenty for titles but far too
+ * small for an OSC 52 clipboard: the sequence carries no length, it is just
+ * base64 running until the string terminator, and a megabyte of clipboard is
+ * a megabyte and a third of base64. Truncating it used to abandon the whole
+ * sequence and spill the rest of the base64 onto the display as text, so
+ * instead move the payload into a buffer that grows as it arrives. Only
+ * OSC 52 gets this treatment; every other string keeps the MAXSTR limit.
+ *
+ * Returns true if the payload was taken over by w_longstring.
+ */
+static bool StringLongStart(Window *win)
+{
+	size_t len;
+
+	if (win->w_StringType != OSC || strncmp(win->w_string, "52;", 3) != 0)
+		return false;
+
+	len = win->w_stringp - win->w_string;
+	win->w_longstringsize = 2 * MAXSTR;
+	win->w_longstring = malloc(win->w_longstringsize);
+	if (!win->w_longstring) {
+		/* Out of memory: swallow the payload rather than display it. */
+		win->w_longstringover = true;
+		return true;
+	}
+	memmove(win->w_longstring, win->w_string, len);
+	win->w_longstringlen = len;
+	return true;
+}
+
+static void StringLongChar(Window *win, int c)
+{
+	if (win->w_longstringover)
+		return;		/* payload is being discarded */
+
+	if (win->w_longstringlen + 2 > win->w_longstringsize) {
+		char *buf;
+		size_t size = 2 * win->w_longstringsize;
+
+		if (size > MAXOSC52) {
+			/* Runaway sequence. Drop what we have, but keep eating
+			 * characters so the remainder does not end up on the
+			 * display as text. */
+			StringLongFree(win);
+			win->w_longstringover = true;
+			return;
+		}
+		buf = realloc(win->w_longstring, size);
+		if (!buf) {
+			StringLongFree(win);
+			win->w_longstringover = true;
+			return;
+		}
+		win->w_longstring = buf;
+		win->w_longstringsize = size;
+	}
+	win->w_longstring[win->w_longstringlen++] = c;
+}
+
+static void StringLongFree(Window *win)
+{
+	free(win->w_longstring);
+	win->w_longstring = NULL;
+	win->w_longstringlen = 0;
+	win->w_longstringsize = 0;
+}
+
+/*
+ * Hand an OSC that we do not implement ourselves to the host terminal of every
+ * display currently showing this window. "osc" is everything between the
+ * introducer and the terminator, "t" is the terminator we received.
+ *
+ * If "once" is set, stop after the first such display. That matters for
+ * queries: a clipboard read (OSC 52 with a "?" payload) makes the terminal
+ * answer, and if several displays are attached to this window every one of
+ * them would answer. The application only asked once, so the extra replies
+ * would arrive as unsolicited input, corrupting the response it is parsing.
+ */
+static void ForwardOSC(Window *win, char *osc, char *t, bool once)
+{
+	for (display = displays; display; display = display->d_next) {
+		if (!D_forecv || D_forecv->c_layer->l_bottom != &win->w_layer)
+			continue;
+		AddStr("\033]");
+		AddStr(osc);
+		AddStr(t);
+		if (once)
+			break;
+	}
+}
+
 static void StringChar(Window *win, int c)
 {
-	if (win->w_stringp >= win->w_string + MAXSTR - 1)
-		win->w_state = LIT;
-	else
-		*(win->w_stringp)++ = c;
+	if (win->w_longstring || win->w_longstringover) {
+		StringLongChar(win, c);
+		return;
+	}
+	if (win->w_stringp >= win->w_string + MAXSTR - 1) {
+		if (StringLongStart(win))
+			StringLongChar(win, c);
+		else
+			win->w_state = LIT;
+		return;
+	}
+	*(win->w_stringp)++ = c;
 }
 
 /*
@@ -1233,6 +1347,19 @@ static int StringEnd(Window *win)
 
 	win->w_state = LIT;
 	*win->w_stringp = '\0';
+
+	/* Payloads too long for w_string were spilled into w_longstring. Only
+	 * OSC 52 does that, and all we do with it is pass it on. */
+	if (win->w_longstring || win->w_longstringover) {
+		if (win->w_longstring) {
+			win->w_longstring[win->w_longstringlen] = '\0';
+			ForwardOSC(win, win->w_longstring, t, false);
+		}
+		StringLongFree(win);
+		win->w_longstringover = false;
+		return 0;
+	}
+
 	switch (win->w_StringType) {
 	case OSC:		/* special xterm compatibility hack */
 		if (win->w_string[0] == ';' || (p = strchr(win->w_string, ';')) == NULL)
@@ -1262,6 +1389,19 @@ static int StringEnd(Window *win)
 				fore = NULL;
 				flayer = NULL;
 			}
+			break;
+		}
+		if (typ == 52) {
+			/* Clipboard access (OSC 52). We have no clipboard of our
+			 * own to offer, and dropping it here is why programs like
+			 * vim cannot reach the system clipboard from inside
+			 * screen. Pass it on to the host terminal. A read (the
+			 * payload is a bare "?") is sent to one display only, so
+			 * that the application gets exactly one answer back. */
+			char *q = strrchr(win->w_string, ';');
+
+			ForwardOSC(win, win->w_string, t,
+				   q && q[1] == '?' && q[2] == '\0');
 			break;
 		}
 		if (typ == 0 || typ == 1 || typ == 2 || typ == 11 || typ == 20 || typ == 39 || typ == 49) {
@@ -1315,6 +1455,22 @@ static int StringEnd(Window *win)
 		}
 		return -1;
 	case DCS:
+		/* Historically we passed the data string of every DCS straight
+		 * to the host terminal, which echoes anything that is not
+		 * itself an escape sequence as literal text on the display:
+		 * DECRQSS (ESC P $ q m ESC \) shows up as "$qm", and so does
+		 * any other DCS we do not implement. ECMA-48 requires an
+		 * unrecognized DCS to produce no visible output at all.
+		 *
+		 * Note that we forward only the data string, not the DCS
+		 * introducer and terminator around it, so passthrough can do
+		 * something useful only when the data string is a complete
+		 * escape sequence in its own right (the ESC P ESC ] 5 2 ; ...
+		 * BEL ESC \ trick used to reach the host clipboard). A payload
+		 * that does not start with ESC could never arrive as anything
+		 * but junk, so drop it silently instead of displaying it. */
+		if (win->w_string[0] != '\033')
+			break;
 		LAY_DISPLAYS(&win->w_layer, AddStr(win->w_string));
 		break;
 	case AKA:

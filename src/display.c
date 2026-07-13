@@ -2521,8 +2521,13 @@ static void disp_readev_fn(Event *event, void *data)
 
 	if (size > IOSIZE)
 		size = IOSIZE;
-	if (size <= 0)
-		size = 1;	/* Always allow one char for command keys */
+	if (size <= 0) {
+		/* The window's input buffer is full. Normal windows now spill
+		 * the overflow (see WinProcess), so keep reading at full
+		 * speed; pseudo windows still drop overflow, so for them read
+		 * just one char to keep command keys working. */
+		size = W_UWP(D_fore) ? 1 : IOSIZE;
+	}
 
 	size = read(D_userfd, buf, size);
 	if (size < 0) {
