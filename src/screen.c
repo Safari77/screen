@@ -203,6 +203,8 @@ static int lf_secreopen(char *name, int wantfd, struct Log *l)
 
 	close(wantfd);
 	if (((got_fd = secopen(name, O_WRONLY | O_CREAT | O_APPEND, 0666)) < 0) || lf_move_fd(got_fd, wantfd) < 0) {
+		if (got_fd >= 0)
+			close(got_fd);
 		logfclose(l);
 		return -1;
 	}

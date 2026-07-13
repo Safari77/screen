@@ -84,6 +84,8 @@ static int logfile_reopen(char *name, int wantfd, Log *l)
 
 	close(wantfd);
 	if (((got_fd = open(name, O_WRONLY | O_CREAT | O_APPEND, 0666)) < 0) || lf_move_fd(got_fd, wantfd) < 0) {
+		if (got_fd >= 0)
+			close(got_fd);
 		logfclose(l);
 		return -1;
 	}
