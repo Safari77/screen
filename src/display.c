@@ -2188,11 +2188,10 @@ void AddStr(char *str)
 {
 	char c;
 
-	if (D_encoding == UTF8) {
-		while ((c = *str++))
-			AddUtf8((unsigned char)c);
-		return;
-	}
+	/* Input is already byte-encoded (UTF-8, escape sequences, etc).
+	   Do NOT per-byte AddUtf8() here — that would double-encode.
+	   Single-code-point UTF-8 encoding is done elsewhere via AddUtf8(c)
+	   in the character-output path (see RAW_PUTCHAR). */
 	while ((c = *str++))
 		AddChar(c);
 }
@@ -2201,12 +2200,8 @@ void AddStrn(char *str, int n)
 {
 	char c;
 
-	if (D_encoding == UTF8) {
-		while ((c = *str++) && n-- > 0)
-			AddUtf8((unsigned char)c);
-	} else
-		while ((c = *str++) && n-- > 0)
-			AddChar(c);
+	while ((c = *str++) && n-- > 0)
+		AddChar(c);
 	while (n-- > 0)
 		AddChar(' ');
 }
