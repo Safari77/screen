@@ -547,7 +547,7 @@ int main(int argc, char **argv)
 				case 'T':
 					if (--argc == 0)
 						exit_with_usage(myname, "Specify terminal-type with -T", NULL);
-					if (strlen(*++argv) < MAXTERMLEN) {
+					if (strlen(*++argv) <= MAXTERMLEN) {
 						strncpy(screenterm, *argv, MAXTERMLEN);
 						screenterm[MAXTERMLEN] = '\0';
 					} else
