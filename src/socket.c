@@ -501,6 +501,7 @@ int SendErrorMsg(char *tty, char *buf)
 	int ret = 0;
 	Message m;
 
+	memset(&m, 0, sizeof(Message));
 	strncpy(m.m.message, buf, ARRAY_SIZE(m.m.message) - 1);
 	m.m.message[ARRAY_SIZE(m.m.message) - 1] = 0;
 	s = MakeClientSocket(0);
