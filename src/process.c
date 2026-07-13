@@ -1989,7 +1989,7 @@ static void DoCommandFlow(struct action *act)
 			fore->w_flow =
 			    (fore->w_flow & FLOW_AUTO) ? FLOW_AUTOFLAG | FLOW_AUTO | FLOW_ON : FLOW_AUTOFLAG;
 		} else 	if (ParseOnOff(act, &b) == 0)
-			fore->w_flow = (fore->w_flow & FLOW_AUTO) | b ? FLOW_ON : FLOW_OFF;
+			fore->w_flow = (fore->w_flow & FLOW_AUTO) | (b ? FLOW_ON : FLOW_OFF);
 	} else {
 		if (fore->w_flow & FLOW_AUTOFLAG)
 			fore->w_flow = (fore->w_flow & FLOW_AUTO) | FLOW_ON;
