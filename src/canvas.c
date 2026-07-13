@@ -517,8 +517,6 @@ void ResizeCanvas(Canvas *cv)
 			cv->c_xoff = i;
 			cv->c_yoff = ys;
 		}
-		cv->c_xoff = cv->c_xs;
-		cv->c_yoff = cv->c_ys;
 		cv->c_blank.l_width = cv->c_xe - cv->c_xs + 1;
 		cv->c_blank.l_height = cv->c_ye - cv->c_ys + 1;
 		if (cv->c_slperp) {
