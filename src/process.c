@@ -2085,7 +2085,7 @@ static void DoCommandMonitor(struct action *act)
 				ACLBYTE(fore->w_mon_notify, i) &= ~ACLBIT(i);
 		for (i = maxusercount - 1; i >= 0; i--)
 			if (ACLBYTE(fore->w_mon_notify, i))
-				return;
+				break;
 		if (i < 0)
 			fore->w_monitor = MON_OFF;
 		OutputMsg(0, "Window %d (%s) is no longer being monitored for activity.", fore->w_number,
