@@ -769,14 +769,15 @@ void ReceiveMsg(void)
 				if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS)
 					continue;
 				cp = (char *)CMSG_DATA(cmsg);
-				cl = cmsg->cmsg_len;
-				while (cl >= CMSG_LEN(sizeof(int))) {
+				cl = cmsg->cmsg_len - CMSG_LEN(0);
+				while (cl >= sizeof(int)) {
 					int passedfd;
 					memmove(&passedfd, cp, sizeof(int));
 					if (recvfd >= 0 && passedfd != recvfd)
 						close(recvfd);
 					recvfd = passedfd;
-					cl -= CMSG_LEN(sizeof(int));
+					cp += sizeof(int);
+					cl -= sizeof(int);
 				}
 			}
 		}
@@ -898,7 +899,7 @@ void ReceiveMsg(void)
 			char *oldSocketPath = SaveStr(SocketPath);
 			strncpy(SocketPath, m.m.command.writeback, ARRAY_SIZE(SocketPath));
 			int s = MakeClientSocket(0);
-			strncpy(SocketPath, oldSocketPath, ARRAY_SIZE(SocketPath)-1);
+			strncpy(SocketPath, oldSocketPath, ARRAY_SIZE(SocketPath) - 1);
 			Free(oldSocketPath);
 			if (s >= 0) {
 				queryflag = s;
