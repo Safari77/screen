@@ -373,7 +373,7 @@ static void CheckMaxSize(int wi)
 
 	if (wi > MAXWIDTH)
 		wi = MAXWIDTH;
-	if (wi <= maxwidth)
+	if (wi < maxwidth)
 		return;
 	maxwidth = wi + 1;
 	blank = xrealloc(blank, maxwidth * 4);
