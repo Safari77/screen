@@ -731,7 +731,7 @@ void OneCanvas(void)
 	ResizeLayersToCanvases();
 }
 
-void DupLayoutCv(Canvas *cvf, Canvas *cvt, bool save)
+static int DupLayoutCvRec(Canvas *cvf, Canvas *cvt, bool save)
 {
 	while (cvf) {
 		cvt->c_slorient = cvf->c_slorient;
@@ -755,12 +755,17 @@ void DupLayoutCv(Canvas *cvf, Canvas *cvt, bool save)
 		}
 		if (cvf->c_slperp) {
 			cvt->c_slperp = calloc(1, sizeof(Canvas));
+			if (!cvt->c_slperp)
+				return -1;
 			cvt->c_slperp->c_slback = cvt;
 			CanvasInitBlank(cvt->c_slperp);
-			DupLayoutCv(cvf->c_slperp, cvt->c_slperp, save);
+			if (DupLayoutCvRec(cvf->c_slperp, cvt->c_slperp, save) < 0)
+				return -1;
 		}
 		if (cvf->c_slnext) {
 			cvt->c_slnext = calloc(1, sizeof(Canvas));
+			if (!cvt->c_slnext)
+				return -1;
 			cvt->c_slnext->c_slprev = cvt;
 			cvt->c_slnext->c_slback = cvt->c_slback;
 			CanvasInitBlank(cvt->c_slnext);
@@ -768,6 +773,19 @@ void DupLayoutCv(Canvas *cvf, Canvas *cvt, bool save)
 		cvf = cvf->c_slnext;
 		cvt = cvt->c_slnext;
 	}
+	return 0;
+}
+
+int DupLayoutCv(Canvas *cvf, Canvas *cvt, bool save)
+{
+	Canvas *fcv = D_forecv;
+
+	if (DupLayoutCvRec(cvf, cvt, save) < 0) {
+		FreeLayoutCv(cvt);	/* drop the half-built copy in one pass (safe: unbuilt links are NULL) */
+		D_forecv = fcv;		/* un-dangle: it may have been repointed into the freed copy */
+		return -1;
+	}
+	return 0;
 }
 
 void PutWindowCv(Canvas *cv)
