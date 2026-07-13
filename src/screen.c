@@ -1901,13 +1901,16 @@ static char *ParseChar(char *p, char *cp)
 		else
 			return NULL;
 		++p;
-	} else if (*p == '\\' && *++p <= '7' && *p >= '0') {
+	} else if (*p == '\\' && p[1] <= '7' && p[1] >= '0') {
+		++p;
 		*cp = 0;
-		do
+		do {
 			*cp = *cp * 8 + *p - '0';
-		while (*++p <= '7' && *p >= '0');
-	} else
+			++p;
+		} while (*p <= '7' && *p >= '0');
+	} else {
 		*cp = *p++;
+	}
 	return p;
 }
 
