@@ -1026,18 +1026,27 @@ void LayPauseUpdateRegion(Layer *layer, int xs, int xe, int ys, int ye)
 
 	if (layer->l_pause.top == -1 || layer->l_pause.top > ys)
 		layer->l_pause.top = ys;
+
 	if (layer->l_pause.bottom < ye) {
-		layer->l_pause.bottom = ye;
 		if (layer->l_pause.lines <= ye) {
-			int o = layer->l_pause.lines;
-			layer->l_pause.lines = ye + 32;
-			layer->l_pause.left = realloc(layer->l_pause.left, sizeof(int) * layer->l_pause.lines);
-			layer->l_pause.right = realloc(layer->l_pause.right, sizeof(int) * layer->l_pause.lines);
-			while (o < layer->l_pause.lines) {
+			int newlines = ye + 32;
+			int *nl, *nr;
+
+			nl = realloc(layer->l_pause.left, sizeof(int) * newlines);
+			if (!nl)
+				return;			/* old arrays/sizes untouched; region not recorded */
+			layer->l_pause.left = nl;	/* realloc already freed the old block */
+
+			nr = realloc(layer->l_pause.right, sizeof(int) * newlines);
+			if (!nr)
+				return;			/* left may now exceed 'lines'; harmless, never indexed past 'lines' */
+			layer->l_pause.right = nr;
+
+			for (int o = layer->l_pause.lines; o < newlines; o++)
 				layer->l_pause.left[o] = layer->l_pause.right[o] = -1;
-				o++;
-			}
+			layer->l_pause.lines = newlines;	/* commit size only after both succeed */
 		}
+		layer->l_pause.bottom = ye;		/* commit bottom only when arrays can hold it */
 	}
 
 	while (ys <= ye) {
