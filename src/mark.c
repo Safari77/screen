@@ -283,7 +283,7 @@ static int rem(int x1, int y1, int x2, int y2, int redisplay, char *pt, int yend
 		if (redisplay != 2 && pt == NULL)	/* don't count/copy */
 			continue;
 		j = from;
-		if (dw_right(ml, j, fore->w_encoding))
+		if (j > 0 && dw_right(ml, j, fore->w_encoding))
 			j--;
 		im = ml->image + j;
 		fo = ml->font + j;
