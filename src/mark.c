@@ -1009,7 +1009,7 @@ void revto_line(int tx, int ty, int line)
 
 	/* don't just move inside of a kanji, the user wants to see something */
 	ml = WIN(ty);
-	if (ty == fy && fx + 1 == tx && dw_right(ml, tx, fore->w_encoding) && tx < D_width - 1)
+	if (ty == fy && fx + 1 == tx && dw_right(ml, tx, fore->w_encoding) && tx < fore->w_width - 1)
 		tx++;
 	if (ty == fy && fx - 1 == tx && dw_right(ml, fx, fore->w_encoding) && tx)
 		tx--;
