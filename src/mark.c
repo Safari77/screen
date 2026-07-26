@@ -330,14 +330,17 @@ static int rem(int x1, int y1, int x2, int y2, int redisplay, char *pt, int yend
 			 */
 			switch (markdata->nonl) {
 			case 0:	/* lines separated by newlines */
-				if (pt)
-					*pt++ = '\r';
-				l++;
+				/* "crlf on" prepends the CR, see the J command
+				 * and the append case in MarkProcess()
+				 */
 				if (join_with_cr) {
 					if (pt)
-						*pt++ = '\n';
+						*pt++ = '\r';
 					l++;
 				}
+				if (pt)
+					*pt++ = '\n';
+				l++;
 				break;
 			case 1:	/* nothing to separate lines */
 				break;
