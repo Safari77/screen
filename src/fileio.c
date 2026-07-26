@@ -336,12 +336,10 @@ void WriteFile(struct acluser *user, char *fn, int dump)
 	 */
 	int i, j, k;
 	char *c;
-	FILE *f;
+	FILE *f = NULL;
 	char fnbuf[FILENAME_MAX];
 	char *mode = "w";
-	int public = 0;
-	struct stat stb, stb2;
-	int fd, exists = 0;
+	int fd;
 
 	switch (dump) {
 	case DUMP_TERMCAP:
@@ -374,36 +372,14 @@ void WriteFile(struct acluser *user, char *fn, int dump)
 			fnbuf[ARRAY_SIZE(fnbuf) - 1] = 0;
 			fn = fnbuf;
 		}
-		public = !strcmp(fn, DEFAULT_BUFFERFILE);
-		exists = !lstat(fn, &stb);
-		if (public && exists && (S_ISLNK(stb.st_mode) || stb.st_nlink > 1)) {
-			Msg(0, "No write to links, please.");
-			return;
-		}
 		break;
 	}
 
 	if (UserContext() > 0) {
-		if (dump == DUMP_EXCHANGE && public) {
-			if (exists) {
-				if ((fd = open(fn, O_WRONLY, 0666)) >= 0) {
-					if (fstat(fd, &stb2) == 0
-					    && stb.st_dev == stb2.st_dev
-					    && stb.st_ino == stb2.st_ino) {
-						if (ftruncate(fd, 0) != 0) {
-							close(fd);
-							fd = -1;
-						}
-					} else {
-						close(fd);
-						fd = -1;
-					}
-				}
-			} else
-				fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0666);
+		if (dump == DUMP_EXCHANGE) {
+			fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0666);
 			f = fd >= 0 ? fdopen(fd, mode) : NULL;
-		} else
-			f = fopen(fn, mode);
+		}
 		if (f == NULL) {
 			UserReturn(0);
 		} else {
@@ -450,7 +426,9 @@ void WriteFile(struct acluser *user, char *fn, int dump)
 						putc(*c, f);
 				break;
 			}
-			(void)fclose(f);
+			fflush(f);
+			fsync(fileno(f));
+			fclose(f);
 			UserReturn(1);
 		}
 	}
