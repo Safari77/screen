@@ -202,7 +202,8 @@ static void nextword(int *xp, int *yp, int flags, int num)
 		if (x >= xx || x < 0)
 			q = 0;
 		else if (flags & NW_BIG)
-			q = ml->image[x] == ' ';
+			/* same convention as is_letter(): 0 means whitespace */
+			q = ml->image[x] != ' ';
 		else
 			q = is_letter(ml->image[x]);
 		if (oq >= 0 && oq != q) {
