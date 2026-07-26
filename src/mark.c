@@ -131,19 +131,20 @@ static int lineend(int y)
  *
  * Returns -1 if the target doesn't appear num times, 0 otherwise.
  */
-static int nextchar(int *xp, int *yp, int direction, char target, int num)
+static int nextchar(int *xp, int *yp, int direction, uint32_t target, int num)
 {
 	int width;		/* width of the current window. */
 	int x;			/* x coordinate of the current cursor position. */
 	int step;		/* amount to increment x (+1 or -1) */
 	int adjust;		/* Final adjustment of cursor position. */
-	char *displayed_line;	/* Line in which search takes place. */
+	uint32_t *displayed_line;	/* Line in which search takes place. */
 
 	x = *xp;
 	step = 1;
 	adjust = 0;
 	width = fore->w_width;
-	displayed_line = (char *)WIN(*yp)->image;
+	/* one cell per code point: the image must not be walked byte-wise */
+	displayed_line = WIN(*yp)->image;
 
 	switch (direction) {
 	case 't':
@@ -160,7 +161,7 @@ static int nextchar(int *xp, int *yp, int direction, char target, int num)
 
 	x += step;
 
-	for (; x >= 0 && x <= width; x += step) {
+	for (; x >= 0 && x < width; x += step) {
 		if (displayed_line[x] == target) {
 			if (--num == 0) {
 				*xp = x + adjust;
