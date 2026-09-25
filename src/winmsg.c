@@ -314,6 +314,7 @@ winmsg_esc_ex(PadOrTrunc, int *numpad, int *lastpad, int padlen)
 			*lastpad = wmbc->p - winmsg->buf;
 			wmbc->trunc.pos = -1;
 			wmbc->trunc.ellip = false;
+			return; /* wmbc->p already correctly positioned by wmbc_putchar */
 		}
 	} else if (padlen) {
 		*wmbc->p = CHRPAD;	/* internal pad representation */

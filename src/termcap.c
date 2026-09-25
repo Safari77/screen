@@ -188,7 +188,7 @@ int InitTermcap(int width, int height)
 		if (D_CXT)
 			D_BE = 1;
 	}
-	if (nwin_options.flowflag == nwin_undef.flowflag)
+	if (nwin_default.flowflag == nwin_undef.flowflag)
 		nwin_default.flowflag = D_CNF ? FLOW_OFF : D_NX ? FLOW_ON : FLOW_AUTOFLAG;
 	D_CLP |= (!D_AM || D_XV || D_XN);
 	if (!D_BL)

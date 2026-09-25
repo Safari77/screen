@@ -447,16 +447,20 @@ void SendCreateMsg(char *sty, struct NewWindow *nwin)
 	int s;
 	Message m;
 	char *p;
-	size_t len, n;
+	size_t len, n, used;
 	char **av;
 	int max_sty_len;
 
-	max_sty_len = FILENAME_MAX;
-	if (2 * MAXSTR - 1 < max_sty_len)
-		max_sty_len = 2 * MAXSTR - 1;
+	if (strlen(sty) > FILENAME_MAX)
+		sty[FILENAME_MAX] = 0;
+	if (strlen(sty) > 2 * MAXSTR - 1)
+		sty[2 * MAXSTR - 1] = 0;
 
-	snprintf(SocketPath + strlen(SocketPath), sizeof(SocketPath) - strlen(SocketPath), "/%.*s", max_sty_len, sty);
-	
+	used = strlen(SocketPath);
+	if (used + 1 + strlen(sty) >= sizeof(SocketPath))
+	    Panic(0, "Socket path too long.");
+	snprintf(SocketPath + used, sizeof(SocketPath) - used, "/%s", sty);
+
 	if ((s = MakeClientSocket(1)) == -1)
 		exit(1);
 

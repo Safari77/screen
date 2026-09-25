@@ -4239,6 +4239,7 @@ static void DoCommandResize(struct action *act)
 {
 	char **args = act->args;
 	int i = 0;
+	int prompt = 0;
 
 	if (D_forecv->c_slorient == SLICE_UNKN) {
 		OutputMsg(0, "resize: need more than one region");
@@ -4264,8 +4265,13 @@ static void DoCommandResize(struct action *act)
 	}
 	if (*args)
 		ResizeRegions(*args, i);
-	else
-		Input(resizeprompts[i], 20, INP_EVERY, ResizeFin, NULL, i);
+	else {
+		prompt = i;
+		/* With no explicit -h/-v/-b, use split orientation */
+		if ((prompt & (RESIZE_FLAG_H | RESIZE_FLAG_V)) == 0 && D_forecv->c_slorient == SLICE_VERT)
+			prompt |= RESIZE_FLAG_H;
+		Input(resizeprompts[prompt], 20, INP_EVERY, ResizeFin, NULL, i);
+	}
 }
 
 static void DoCommandSetsid(struct action *act)
@@ -7149,6 +7155,7 @@ static void ResizeFin(char *buf, size_t len, void *data)
 {
 	int ch;
 	int flags = *(int *)data;
+	int prompt = 0;
 	ch = ((unsigned char *)buf)[len];
 	if (ch == 0) {
 		ResizeRegions(buf, flags);
@@ -7166,7 +7173,11 @@ static void ResizeFin(char *buf, size_t len, void *data)
 		flags ^= RESIZE_FLAG_L;
 	else
 		return;
-	inp_setprompt(resizeprompts[flags], NULL);
+	prompt = flags;
+	/* With no explicit -h/-v/-b, use split orientation */
+	if ((prompt & (RESIZE_FLAG_H | RESIZE_FLAG_V)) == 0 && D_forecv->c_slorient == SLICE_VERT)
+		prompt |= RESIZE_FLAG_H;
+	inp_setprompt(resizeprompts[prompt], NULL);
 	*(int *)data = flags;
 	buf[len] = '\034';
 }
