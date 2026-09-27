@@ -32,8 +32,8 @@ endif
 SCREENENCODINGS = $(datadir)/screen/utf8encodings
 
 CC = @CC@
-CFLAGS = @CFLAGS@ -Wall -Wextra -std=c17
-CPPFLAGS = @CPPFLAGS@ -I$(srcdir) -iquote. -DSCREENENCODINGS='"$(SCREENENCODINGS)"' -DBUILD_DATE='"$(BUILD_DATE)"'
+CFLAGS = @CFLAGS@ -Wall -Wextra -std=gnu23
+CPPFLAGS = @CPPFLAGS@ -iquote $(srcdir) -DSCREENENCODINGS='"$(SCREENENCODINGS)"' -DBUILD_DATE='"$(BUILD_DATE)"'
 LDFLAGS = @LDFLAGS@
 LIBS = @LIBS@
 
